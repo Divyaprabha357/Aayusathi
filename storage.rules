@@ -1,0 +1,105 @@
+rules_version = '2';
+
+// =========================================================================
+// AAYUSATHI PHASE D17: FIREBASE STORAGE SECURITY RULES
+//
+// CRITICAL SECURITY MANDATES:
+// 1. Unauthenticated access is STRICTLY DENIED across all storage paths.
+// 2. Public / anonymous file browsing is FORBIDDEN.
+// 3. Permitted MIME types: application/pdf, image/jpeg, image/png.
+// 4. Maximum file size: 15 MB (15 * 1024 * 1024 bytes).
+// 5. Clinical document hierarchy:
+//    patients/{patientId}/cases/{caseId}/visits/{visitId}/reports/{fileName}
+// =========================================================================
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isRole(role) {
+      return isAuthenticated() && (
+        ('role' in request.auth.token && request.auth.token.role == role) ||
+        (role == 'admin' && (
+          'email' in request.auth.token &&
+          request.auth.token.email != null &&
+          (
+            request.auth.token.email == 'admin01@hospital.aayusathi.in' ||
+            request.auth.token.email.matches('^admin[0-9]*@hospital\\.aayusathi\\.in$')
+          )
+        )) ||
+        (role == 'doctor' && (
+          'email' in request.auth.token &&
+          request.auth.token.email != null &&
+          request.auth.token.email.matches('^doc-[0-9]+@hospital\\.aayusathi\\.in$')
+        ))
+      );
+    }
+
+    function isOwner(authUid) {
+      return isAuthenticated() && request.auth.uid == authUid;
+    }
+
+    function isValidFileSize() {
+      return request.resource.size <= 15 * 1024 * 1024;
+    }
+
+    function isValidContentType() {
+      return request.resource.contentType.matches('application/pdf') ||
+             request.resource.contentType.matches('image/jpeg') ||
+             request.resource.contentType.matches('image/jpg') ||
+             request.resource.contentType.matches('image/png');
+    }
+
+    // Clinical Reports & Diagnostic Documents
+    // Path: patients/{patientId}/cases/{caseId}/visits/{visitId}/reports/{fileName}
+    match /patients/{patientId}/cases/{caseId}/visits/{visitId}/reports/{fileName} {
+      
+      // READ: Allowed for authenticated Doctor, Admin, or Patient owner
+      allow read: if isAuthenticated() && (
+        isRole('doctor') ||
+        isRole('admin') ||
+        request.auth.uid == patientId
+      );
+
+      // WRITE (Upload): Allowed for authenticated Doctor, Patient owner, or Admin with valid file size & MIME type
+      allow write: if isAuthenticated() &&
+                      isValidFileSize() &&
+                      isValidContentType() && (
+                        isRole('doctor') ||
+                        isRole('admin') ||
+                        request.auth.uid == patientId
+                      );
+
+      // DELETE: Restricted to Admin governance only
+      allow delete: if isRole('admin');
+    }
+
+    // Nested investigation reports path (support for /{investigationId}/{fileName})
+    match /patients/{patientId}/cases/{caseId}/visits/{visitId}/reports/{investigationId}/{fileName} {
+      allow read: if isAuthenticated() && (
+        isRole('doctor') ||
+        isRole('admin') ||
+        request.auth.uid == patientId
+      );
+
+      allow write: if isAuthenticated() &&
+                      isValidFileSize() &&
+                      isValidContentType() && (
+                        isRole('doctor') ||
+                        isRole('admin') ||
+                        request.auth.uid == patientId
+                      );
+
+      allow delete: if isRole('admin');
+    }
+
+    // Default deny for all other paths
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

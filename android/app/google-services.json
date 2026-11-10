@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "919886761374",
+    "project_id": "aayusathi-a1199",
+    "storage_bucket": "aayusathi-a1199.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:919886761374:android:f0c11883a5fd4560f0da8f",
+        "android_client_info": {
+          "package_name": "com.example.aayusathi"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBLIEJhEghpyM-w-HUE2iZRBNZUft-i2Sg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,0 +1,245 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // =========================================================================
+    // AAYUSATHI PHASE 10: FIREBASE AUTHENTICATION + ROLE-BASED SECURITY RULES
+    //
+    // CRITICAL SECURITY MANDATES:
+    // 1. Unauthenticated access is DENIED across all collections.
+    // 2. "allow read, write: if true;" is STRICTLY FORBIDDEN.
+    // 3. Plain-text Aadhaar is REJECTED at rule assertion level.
+    // 4. Bulk querying / listing of the patients collection is DENIED to Kiosk and Patients.
+    // 5. Audit logs are strictly APPEND-ONLY (updates and deletes are forbidden).
+    // =========================================================================
+
+    // Authentication & Identity Helpers
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAnonymousKiosk() {
+      return isAuthenticated() &&
+        'firebase' in request.auth.token &&
+        'sign_in_provider' in request.auth.token.firebase &&
+        request.auth.token.firebase.sign_in_provider == 'anonymous';
+    }
+
+    function isRole(role) {
+      return isAuthenticated() && (
+        ('role' in request.auth.token && request.auth.token.role == role) ||
+        (role == 'admin' && (
+          'email' in request.auth.token &&
+          request.auth.token.email != null &&
+          (
+            request.auth.token.email == 'admin01@hospital.aayusathi.in' ||
+            request.auth.token.email.matches('^admin[0-9]*@hospital\\.aayusathi\\.in$')
+          )
+        )) ||
+        (role == 'doctor' && (
+          'email' in request.auth.token &&
+          request.auth.token.email != null &&
+          request.auth.token.email.matches('^doc-[0-9]+@hospital\\.aayusathi\\.in$')
+        ))
+      );
+    }
+
+    function isOwner(authUid) {
+      return isAuthenticated() && request.auth.uid == authUid;
+    }
+
+    // 1. Patients Collection
+    // Schema: { patientId, name, dateOfBirth, age, gender, phone, bloodGroup, address, createdAt, updatedAt, isActive }
+    // STRICT RULE: Plain text Aadhaar is NEVER permitted in this collection.
+    match /patients/{patientId} {
+      // Must not contain plain text Aadhaar
+      allow create: if isAuthenticated() &&
+                       !('aadhaarNumber' in request.resource.data) &&
+                       !('aadhaar' in request.resource.data);
+      
+      // Update allowed only without Aadhaar and if authenticated
+      allow update: if isAuthenticated() &&
+                       !('aadhaarNumber' in request.resource.data) &&
+                       !('aadhaar' in request.resource.data) &&
+                       (isOwner(resource.data.authUid) || isAnonymousKiosk() || isRole('admin'));
+
+      // Read single document: allowed for own patient, kiosk terminal, doctor, or admin
+      allow get: if isAuthenticated() &&
+                    (isOwner(resource.data.authUid) || isAnonymousKiosk() || isRole('doctor') || isRole('admin'));
+
+      // Bulk list: ONLY admin can list/query all patients. Kiosk and patients CANNOT browse the collection!
+      allow list: if isRole('admin');
+
+      // Deletion: restricted strictly to administrative governance
+      allow delete: if isRole('admin');
+
+      // Clinical Cases Subcollection
+      match /cases/{caseId} {
+        allow read: if isAuthenticated() && (isAnonymousKiosk() || isOwner(resource.data.patientAuthUid) || isOwner(resource.data.authUid) || isRole('doctor') || isRole('admin'));
+        allow write: if isAuthenticated() && (isRole('doctor') || isRole('admin'));
+
+        // Clinical Visits Subcollection
+        match /visits/{visitId} {
+          allow read: if isAuthenticated() && (isAnonymousKiosk() || isOwner(resource.data.patientAuthUid) || isOwner(resource.data.authUid) || isRole('doctor') || isRole('admin'));
+          allow write: if isAuthenticated() && (isRole('doctor') || isRole('admin'));
+
+          // Diagnostic Investigations Subcollection (Phase D11 & P11)
+          match /investigations/{investigationId} {
+            allow read: if isAuthenticated() && (isAnonymousKiosk() || isOwner(resource.data.patientAuthUid) || isOwner(resource.data.authUid) || isRole('doctor') || isRole('admin'));
+            allow create, delete: if isAuthenticated() && (isRole('doctor') || isRole('admin'));
+            allow update: if isAuthenticated() && (
+              isRole('doctor') || isRole('admin') || (
+                // Controlled patient report upload transition:
+                resource.data.status == 'pendingUpload' &&
+                request.resource.data.status == 'uploaded' &&
+                request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'uploadedAt', 'uploadedReportId'])
+              )
+            );
+          }
+
+          // Uploaded Report Documents Metadata Subcollection (Phase D11 & P11)
+          match /reports/{reportId} {
+            allow read: if isAuthenticated() && (isAnonymousKiosk() || isOwner(resource.data.patientAuthUid) || isOwner(resource.data.authUid) || isRole('doctor') || isRole('admin'));
+            allow create: if isAuthenticated() && (
+              isRole('doctor') || isRole('admin') || (
+                request.resource.data.uploadedByPatientId == patientId &&
+                request.resource.data.reviewStatus == 'uploaded'
+              )
+            );
+            allow update: if isAuthenticated() && (isRole('doctor') || isRole('admin'));
+            allow delete: if isRole('admin');
+          }
+        }
+      }
+    }
+
+    // 2. Doctors Collection
+    // Schema: { doctorId, doctorUniqueCode, name, qualification, department, domains, registeredPhone, email, isActive, availabilityStatus, isAvailable, authUid, currentQueueCount, createdAt, updatedAt }
+    match /doctors/{doctorId} {
+      allow read: if isAuthenticated();
+      // Only Admin can create or delete doctor profiles (Doctor self-registration is strictly forbidden)
+      allow create: if isRole('admin');
+      allow delete: if isRole('admin');
+      // Doctors can only update their own profile and cannot modify immutable identity or administrative status
+      allow update: if isRole('admin') || (
+        isAuthenticated() &&
+        (isRole('doctor') || isOwner(resource.data.authUid)) &&
+        request.resource.data.doctorId == resource.data.doctorId &&
+        request.resource.data.doctorUniqueCode == resource.data.doctorUniqueCode &&
+        request.resource.data.authUid == resource.data.authUid &&
+        request.resource.data.isActive == resource.data.isActive
+      );
+    }
+
+    // 3. Appointments Collection
+    // Strict Queue Format Verification: ^A-[0-9]{5}$
+    match /appointments/{appointmentId} {
+      allow create: if isAuthenticated() &&
+                       request.resource.data.queueNumber.matches('^A-[0-9]{5}$');
+      allow get: if isAuthenticated();
+      allow list: if isAuthenticated() && (isRole('doctor') || isRole('admin') || isAnonymousKiosk() || isOwner(resource.data.patientAuthUid));
+      allow update: if isAuthenticated() && (isAnonymousKiosk() || isRole('doctor') || isRole('admin'));
+      allow delete: if isRole('admin');
+    }
+
+    // Queue counter metadata document (supports both appointments/_counter and system/queueCounter)
+    match /appointments/_counter {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /system/queueCounter {
+      allow read, write: if isAuthenticated();
+    }
+
+    // 4. Vitals Collection
+    match /vitals/{vitalId} {
+      allow create: if isAuthenticated();
+      allow get: if isAuthenticated();
+      allow list: if isAuthenticated() && (isRole('doctor') || isRole('admin') || isAnonymousKiosk());
+      allow update, delete: if isRole('admin');
+    }
+
+    // 5. Visits Collection (Previous consultations)
+    match /visits/{visitId} {
+      allow get: if isAuthenticated();
+      allow list: if isAuthenticated() && (isAnonymousKiosk() || isRole('doctor') || isRole('admin'));
+      allow create, update: if isAuthenticated() && (isAnonymousKiosk() || isRole('doctor') || isRole('admin'));
+      allow delete: if isRole('admin');
+    }
+
+    // 6. Clinical Cases & Visits Collection Group Queries (Phase A8 Case Escalations & Doctor Consultations)
+    match /{path=**}/cases/{caseId} {
+      allow read, write: if isAuthenticated() && (isRole('doctor') || isRole('admin'));
+    }
+
+    match /{path=**}/visits/{visitId} {
+      allow read, write: if isAuthenticated() && (isRole('doctor') || isRole('admin'));
+    }
+
+    match /cases/{caseId} {
+      allow read, write: if isAuthenticated() && (isRole('doctor') || isRole('admin'));
+    }
+
+    match /prescriptions/{prescriptionId} {
+      allow read, write: if isAuthenticated() && (isRole('doctor') || isRole('admin'));
+    }
+
+    match /reports/{reportId} {
+      allow read, write: if isAuthenticated() && (isRole('doctor') || isRole('admin'));
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && (isRole('doctor') || isRole('admin'));
+    }
+
+    match /escalations/{escalationId} {
+      allow read, write: if isAuthenticated() && (isRole('doctor') || isRole('admin'));
+    }
+
+    match /transfers/{transferId} {
+      allow read, write: if isAuthenticated() && (isRole('doctor') || isRole('admin'));
+    }
+
+    // 6.1. Collection Group Access for Clinical Cases and Visits
+    // STRICT RULE: Only authenticated Doctors and Admins can execute collection group queries.
+    // Unauthenticated access and public queries are strictly forbidden.
+    match /{path=**}/cases/{caseId} {
+      allow read: if isAuthenticated() && (isRole('doctor') || isRole('admin'));
+    }
+
+    match /{path=**}/visits/{visitId} {
+      allow read: if isAuthenticated() && (isRole('doctor') || isRole('admin'));
+    }
+
+    // 7. Audit Logs Collection
+    // Append-only governance log: create allowed, update & delete strictly forbidden!
+    match /auditLogs/{logId} {
+      allow create: if isAuthenticated();
+      allow read: if isRole('admin');
+      allow update, delete: if false; // Immutable audit trail
+    }
+
+    // 8. Developer connection tests (Verified in Phase 9/10 live checks)
+    match /dev_connection_tests/{testId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // 9. Demo Aadhaar Collection (Internal Demo Identity Verification)
+    // Strictly fictional demo records; access restricted to authenticated Kiosk and Admin.
+    match /demo_aadhaar/{aadharNumber} {
+      allow get: if isAuthenticated() && (isAnonymousKiosk() || isRole('admin'));
+      allow list: if isRole('admin');
+      allow update: if isAuthenticated() && (
+        (isAnonymousKiosk() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRegistered', 'patientId', 'registeredAt'])) ||
+        isRole('admin')
+      );
+      allow create, delete: if isRole('admin');
+    }
+
+    // Default deny for unmatched paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

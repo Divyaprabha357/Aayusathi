@@ -1,0 +1,87 @@
+
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+Thumbs.db
+.atom/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# IntelliJ / Android Studio
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# VS Code
+# Uncomment if you don't want to share VS Code settings
+# .vscode/
+
+# Flutter / Dart / Pub
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+/build/
+/coverage/
+.packages
+
+# Flutter build artifacts
+/android/app/debug
+/android/app/profile
+/android/app/release
+.widget_preview/
+
+# Symbolication
+app.*.symbols
+
+# Obfuscation
+app.*.map.json
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+supabase.env
+
+# Android signing credentials
+*.jks
+*.keystore
+key.properties
+
+# Private keys and certificates
+*.pem
+*.p12
+serviceAccountKey.json
+
+# Temporary files
+*.tmp
+
+# Files excluded from GitHub upload
+supabase.env
+/walkthrough*.md
+/start_*.bat
+/supabase/.temp/
+
+# Additional generated Flutter files
+.flutter-plugins-dependencies
+**/ephemeral/
+**/local.properties
+ios/Flutter/Generated.xcconfig
+ios/Flutter/flutter_export_environment.sh
+macos/Flutter/Generated.xcconfig
+macos/Flutter/flutter_export_environment.sh
